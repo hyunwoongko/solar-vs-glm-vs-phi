@@ -358,7 +358,7 @@ Layernorm(RMSNorm) weight는 보통 평균이 1에서 별로 멀지 않고(대�
 이 레포지토리에서는 Solar-Open-100B, GLM-4.5-Air, Phi-3.5-MoE-instruct의 파라미터를 여러 지표로 비교하여, 원본 레포가 제시한 Layernorm cosine 유사도 기반 주장만으로는 모델 파생 관계를 결론내리기 어렵다는 점을 보였습니다.
 
 핵심 요약은 다음과 같습니다.
-- 동일 모델 내에서도 Layernorm weight는 레이어 간 cosine 유사도가 매우 높게 나올 수 있으며, 특히 원본 레포처럼 0번 레이어의 `input_layernorm`만 기준으로 잡아 비교하면 특수한 설정 때문에 낮게 관측될 수 있습니다. 저는 이를 상당히 다양한 모델로 확인했습니다.
+- 동일 모델 내에서도 Layernorm weight는 레이어 간 cosine 유사도가 매우 높게 나올 수 있으며, 특히 원본 레포처럼 0번 레이어의 `input_layernorm`만 기준으로 잡아 비교하면 특수한 설정 때문에 낮게 관측될 수 있습니다. 저는 이를 상당히 다양한 모델로 확인했으며, 같은 0번 레이어라고 해도 정규화된 입력을 받는 `post_attention_layernorm`와 그렇지 않은 `input_layernorm`은 서로 다른 특성을 보이기도 한다는 점도 확인했습니다.
 - 서로 다른 모델 간 동일 레이어의 Layernorm weight에서 cosine 유사도가 높게 나오는 현상은, Layernorm/RMSNorm scale 파라미터가 1에서 초기화 되고 낮은 분산, 양수 편향등을 갖는 성질 때문에 쉽게 발생할 수 있습니다. 즉, 높은 cosine은 파생 관계의 강한 증거가 아니라 공통 prior를 반영하는 false positive가 될 수 있습니다. 또한 이를 gpt2 toy 실험으로 어느정도 뒷받침 했습니다.
 - 평균의 영향을 제거한 centered cosine(및 Pearson 상관계수)에서는 서로 다른 모델 간 Layernorm 유사도가 대부분 0 근처로 떨어졌습니다. 이는 일반 cosine에서 관찰된 높은 유사도가 실제 좌표 패턴의 일치라기보다 평균/오프셋 성질에 크게 의존했음을 시사합니다.
 - 차이 기반 지표(mean_abs_diff, p99_abs_diff)와 상대 거리(rel_l2)에서도 Solar가 GLM에 일관되게 더 가깝다는 패턴은 확인되지 않았습니다. 경우에 따라서는 Phi가 GLM에 더 가깝게 측정되기도 했습니다.
