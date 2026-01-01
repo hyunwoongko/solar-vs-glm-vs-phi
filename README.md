@@ -351,7 +351,7 @@ Layernorm(RMSNorm) weight는 보통 평균이 1에서 별로 멀지 않고(대�
 이는 세 모델의 Layernorm weight가 평균 대비 표준편차 비율(CV) 측면에서 매우 유사하다는 뜻입니다. 
 
 즉 `cv_diff`가 0에 가깝다는 것은, 적어도 평균 대비 표준편차 비율(CV) 관점에서 
-세 모델의 Layernorm weight 분포가 매우 유사하다는 뜻입니다.
+세 모델의 Layernorm weight 분포가 매우 유사하다는 의미로 해석할 수 있으며,
 이는 Layernorm 파라미터가 모델이 달라도 비슷한 통계적 형태를 띠기 쉽다는 점을 시사합니다.
 
 ## 5. 결론
