@@ -1,4 +1,5 @@
 import os
+import json
 import matplotlib
 import torch
 import torch.nn.functional as F
@@ -9,6 +10,7 @@ import matplotlib.pyplot as plt
 
 dtype = torch.float32
 device = torch.device("cuda")
+eps = 1e-12
 
 solar = AutoModel.from_pretrained(
     "upstage/Solar-Open-100B",
@@ -31,6 +33,8 @@ def solar_params_by_layer_idx(idx):
     return {
         "input_layernorm": solar.layers[idx].input_layernorm.weight,
         "post_attention_layernorm": solar.layers[idx].post_attention_layernorm.weight,
+        "k_proj": solar.layers[idx].self_attn.k_proj.weight,
+        "v_proj": solar.layers[idx].self_attn.v_proj.weight,
     }
 
 
@@ -38,6 +42,8 @@ def glm_params_by_layer_idx(idx):
     return {
         "input_layernorm": glm.layers[idx].input_layernorm.weight,
         "post_attention_layernorm": glm.layers[idx].post_attention_layernorm.weight,
+        "k_proj": glm.layers[idx].self_attn.k_proj.weight,
+        "v_proj": glm.layers[idx].self_attn.v_proj.weight,
     }
 
 
@@ -45,6 +51,8 @@ def phi_params_by_layer_idx(idx):
     return {
         "input_layernorm": phi.model.layers[idx].input_layernorm.weight,
         "post_attention_layernorm": phi.model.layers[idx].post_attention_layernorm.weight,
+        "k_proj": phi.model.layers[idx].self_attn.k_proj.weight,
+        "v_proj": phi.model.layers[idx].self_attn.v_proj.weight,
     }
 
 
@@ -59,33 +67,83 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
 
 
 @torch.no_grad()
+def centered_cosine_sim(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
+    a = a - a.mean()
+    b = b - b.mean()
+    na = a.norm().clamp_min(eps)
+    nb = b.norm().clamp_min(eps)
+    return (a @ b / (na * nb)).item()
+
+
+@torch.no_grad()
+def pearson_corr(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
+    a = a - a.mean()
+    b = b - b.mean()
+    sa = a.std(unbiased=False).clamp_min(eps)
+    sb = b.std(unbiased=False).clamp_min(eps)
+    return ((a / sa) * (b / sb)).mean().item()
+
+
+@torch.no_grad()
 def mean_abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
     return torch.mean(torch.abs(a - b)).item()
+
+
+@torch.no_grad()
+def rel_l2(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
+    denom = a.norm().clamp_min(eps)
+    return ((a - b).norm() / denom).item()
+
+
+@torch.no_grad()
+def cv_diff(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-12) -> float:
+    cva = a.std(unbiased=False) / a.mean().abs().clamp_min(eps)
+    cvb = b.std(unbiased=False) / b.mean().abs().clamp_min(eps)
+    return torch.abs(cva - cvb).item()
+
+
+@torch.no_grad()
+def p99_abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
+    pa = torch.quantile(torch.abs(a), torch.tensor(0.99, device=a.device, dtype=a.dtype))
+    pb = torch.quantile(torch.abs(b), torch.tensor(0.99, device=b.device, dtype=b.dtype))
+    return torch.abs(pa - pb).item()
 
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
 
+def is_similarity_metric(metric: str) -> bool:
+    return metric in ["cosine", "centered_cosine", "pearson"]
+
+
 def default_diag(metric: str) -> float:
-    if metric == "cosine":
+    if is_similarity_metric(metric):
         return 1.0
-    if metric == "mean_abs_diff":
-        return 0.0
-    raise ValueError(f"unknown metric: {metric}")
+    return 0.0
 
 
 @torch.no_grad()
 def pair_metric(a: torch.Tensor, b: torch.Tensor, metric: str) -> float:
     if metric == "cosine":
         return cosine_sim(a, b)
+    if metric == "centered_cosine":
+        return centered_cosine_sim(a, b, eps=eps)
+    if metric == "pearson":
+        return pearson_corr(a, b, eps=eps)
     if metric == "mean_abs_diff":
         return mean_abs_diff(a, b)
+    if metric == "rel_l2":
+        return rel_l2(a, b, eps=eps)
+    if metric == "cv_diff":
+        return cv_diff(a, b, eps=eps)
+    if metric == "p99_abs_diff":
+        return p99_abs_diff(a, b)
     raise ValueError(f"unknown metric: {metric}")
 
 
 def infer_vmin_vmax(mats, params, metric: str, vmin, vmax):
-    if metric == "cosine":
+    if is_similarity_metric(metric):
         if vmin is None:
             vmin = -1.0
         if vmax is None:
@@ -133,6 +191,16 @@ def confusion_matrices_for_layers(
     return out
 
 
+def mats_to_jsonable(mats):
+    return {k: [[float(x) for x in row] for row in v.tolist()] for k, v in mats.items()}
+
+
+def save_json(obj, out_path: str) -> None:
+    ensure_dir(os.path.dirname(out_path) or ".")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+
 def save_model_matrix_png(
     mats,
     out_path: str,
@@ -165,6 +233,7 @@ def save_model_matrix_png(
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.suptitle(title, y=1.02, fontsize=12)
     fig.tight_layout()
+    ensure_dir(os.path.dirname(out_path) or ".")
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
@@ -195,12 +264,22 @@ def save_confusions_by_layer_list(
             dtype=dtype,
             metric=metric,
         )
-        out_path = os.path.join(out_dir, f"{filename_prefix}_{metric}_layer{layer_idx}.png")
+        out_png = os.path.join(out_dir, f"{filename_prefix}_{metric}_layer{layer_idx}.png")
+        out_json = os.path.join(out_dir, f"{filename_prefix}_{metric}_layer{layer_idx}.json")
         title = f"{metric} | model matrix | layer={layer_idx} (solar/glm/phi)"
         save_model_matrix_png(
-            mats=mats, out_path=out_path, title=title, params=params, metric=metric, vmin=vmin, vmax=vmax, dpi=dpi
+            mats=mats, out_path=out_png, title=title, params=params, metric=metric, vmin=vmin, vmax=vmax, dpi=dpi
         )
-        saved[layer_idx] = out_path
+        save_json(
+            {
+                "metric": metric,
+                "layer": int(layer_idx),
+                "models": ["solar", "glm", "phi"],
+                "mats": mats_to_jsonable(mats),
+            },
+            out_json,
+        )
+        saved[layer_idx] = {"png": out_png, "json": out_json}
     return saved
 
 
@@ -230,23 +309,33 @@ def save_confusion_for_mixed_layers(
         dtype=dtype,
         metric=metric,
     )
-    out_path = os.path.join(
+    out_png = os.path.join(
         out_dir, f"{filename_prefix}_{metric}_s{solar_layer_idx}_g{glm_layer_idx}_p{phi_layer_idx}.png"
+    )
+    out_json = os.path.join(
+        out_dir, f"{filename_prefix}_{metric}_s{solar_layer_idx}_g{glm_layer_idx}_p{phi_layer_idx}.json"
     )
     title = f"{metric} | model matrix | solar={solar_layer_idx}, glm={glm_layer_idx}, phi={phi_layer_idx}"
     save_model_matrix_png(
-        mats=mats, out_path=out_path, title=title, params=params, metric=metric, vmin=vmin, vmax=vmax, dpi=dpi
+        mats=mats, out_path=out_png, title=title, params=params, metric=metric, vmin=vmin, vmax=vmax, dpi=dpi
     )
-    return out_path
+    save_json(
+        {
+            "metric": metric,
+            "solar_layer": int(solar_layer_idx),
+            "glm_layer": int(glm_layer_idx),
+            "phi_layer": int(phi_layer_idx),
+            "models": ["solar", "glm", "phi"],
+            "mats": mats_to_jsonable(mats),
+        },
+        out_json,
+    )
+    return {"png": out_png, "json": out_json}
 
 
 @torch.no_grad()
 def layer_to_layer_matrices_for_model(
-    model_name: str,
-    layer_indices,
-    device: torch.device,
-    dtype: torch.dtype,
-    metric: str,
+    model_name: str, layer_indices, device: torch.device, dtype: torch.dtype, metric: str
 ):
     if model_name == "solar":
         getter = solar_params_by_layer_idx
@@ -313,6 +402,7 @@ def save_within_model_layer_matrix_png(
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     fig.suptitle(title, y=1.02, fontsize=12)
     fig.tight_layout()
+    ensure_dir(os.path.dirname(out_path) or ".")
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight")
     plt.close(fig)
 
@@ -342,15 +432,20 @@ def save_within_model_layer_comparisons(
             raise ValueError(f"unknown model_name: {model_name}")
         params = list(sample.keys())
     mats = layer_to_layer_matrices_for_model(
-        model_name=model_name, layer_indices=layer_indices, device=device, dtype=dtype, metric=metric
+        model_name=model_name,
+        layer_indices=layer_indices,
+        device=device,
+        dtype=dtype,
+        metric=metric,
     )
     layers_tag = "_".join(str(x) for x in layer_indices)
-    out_path = os.path.join(out_dir, f"{filename_prefix}_{metric}_{model_name}_layers{layers_tag}.png")
+    out_png = os.path.join(out_dir, f"{filename_prefix}_{metric}_{model_name}_layers{layers_tag}.png")
+    out_json = os.path.join(out_dir, f"{filename_prefix}_{metric}_{model_name}_layers{layers_tag}.json")
     title = f"{metric} | within-model layer matrix | model={model_name} | layers={layer_indices}"
     save_within_model_layer_matrix_png(
         mats=mats,
         layer_indices=layer_indices,
-        out_path=out_path,
+        out_path=out_png,
         title=title,
         params=params,
         metric=metric,
@@ -358,107 +453,72 @@ def save_within_model_layer_comparisons(
         vmax=vmax,
         dpi=dpi,
     )
-    return out_path
+    save_json(
+        {
+            "metric": metric,
+            "model": model_name,
+            "layers": [int(x) for x in layer_indices],
+            "params": list(mats.keys()),
+            "mats": mats_to_jsonable(mats),
+        },
+        out_json,
+    )
+    return {"png": out_png, "json": out_json}
 
 
 def main():
     layers = [10, 20, 30]
     base_dir = "./outputs"
-    conf_cos_dir = os.path.join(base_dir, "confusions", "cosine")
-    conf_mad_dir = os.path.join(base_dir, "confusions", "mean_abs_diff")
-    within_cos_dir = os.path.join(base_dir, "within_model", "cosine")
-    within_mad_dir = os.path.join(base_dir, "within_model", "mean_abs_diff")
-    params = ["input_layernorm", "post_attention_layernorm"]
-    save_confusions_by_layer_list(
-        layers=layers,
-        out_dir=conf_cos_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="cosine",
-    )
-    save_confusion_for_mixed_layers(
-        solar_layer_idx=10,
-        glm_layer_idx=20,
-        phi_layer_idx=30,
-        out_dir=conf_cos_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="cosine",
-    )
-    save_within_model_layer_comparisons(
-        model_name="solar",
-        layer_indices=layers,
-        out_dir=within_cos_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="cosine",
-    )
-    save_within_model_layer_comparisons(
-        model_name="glm",
-        layer_indices=layers,
-        out_dir=within_cos_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="cosine",
-    )
-    save_within_model_layer_comparisons(
-        model_name="phi",
-        layer_indices=layers,
-        out_dir=within_cos_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="cosine",
-    )
-    save_confusions_by_layer_list(
-        layers=layers,
-        out_dir=conf_mad_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="mean_abs_diff",
-    )
-    save_confusion_for_mixed_layers(
-        solar_layer_idx=10,
-        glm_layer_idx=20,
-        phi_layer_idx=30,
-        out_dir=conf_mad_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="mean_abs_diff",
-    )
-    save_within_model_layer_comparisons(
-        model_name="solar",
-        layer_indices=layers,
-        out_dir=within_mad_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="mean_abs_diff",
-    )
-    save_within_model_layer_comparisons(
-        model_name="glm",
-        layer_indices=layers,
-        out_dir=within_mad_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="mean_abs_diff",
-    )
-    save_within_model_layer_comparisons(
-        model_name="phi",
-        layer_indices=layers,
-        out_dir=within_mad_dir,
-        device=device,
-        dtype=dtype,
-        params=params,
-        metric="mean_abs_diff",
-    )
+    params = ["input_layernorm", "post_attention_layernorm", "k_proj", "v_proj"]
+    metrics = ["cosine", "centered_cosine", "pearson", "mean_abs_diff", "rel_l2", "cv_diff", "p99_abs_diff"]
+    for metric in metrics:
+        conf_dir = os.path.join(base_dir, "confusions", metric)
+        within_dir = os.path.join(base_dir, "within_model", metric)
+        save_confusions_by_layer_list(
+            layers=layers,
+            out_dir=conf_dir,
+            device=device,
+            dtype=dtype,
+            params=params,
+            metric=metric,
+        )
+        save_confusion_for_mixed_layers(
+            solar_layer_idx=10,
+            glm_layer_idx=20,
+            phi_layer_idx=30,
+            out_dir=conf_dir,
+            device=device,
+            dtype=dtype,
+            params=params,
+            metric=metric,
+        )
+        save_within_model_layer_comparisons(
+            model_name="solar",
+            layer_indices=layers,
+            out_dir=within_dir,
+            device=device,
+            dtype=dtype,
+            params=params,
+            metric=metric,
+        )
+        save_within_model_layer_comparisons(
+            model_name="glm",
+            layer_indices=layers,
+            out_dir=within_dir,
+            device=device,
+            dtype=dtype,
+            params=params,
+            metric=metric,
+        )
+        save_within_model_layer_comparisons(
+            model_name="phi",
+            layer_indices=layers,
+            out_dir=within_dir,
+            device=device,
+            dtype=dtype,
+            params=params,
+            metric=metric,
+        )
 
 
 if __name__ == "__main__":
