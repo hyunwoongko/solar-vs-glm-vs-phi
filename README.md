@@ -91,7 +91,7 @@ for layer_j in [10, 20, 30, 40]:
 ![](./assets/phi_within_cos_post_attn.png)
 
 보시다시피 위의 모델에서도 0번째 레이어의 `input_layernorm` 파라미터는 원본 레포에서처럼 매우 낮은 수준의 cosine 유사도를 갖지만, 
-`post_attention_layernorm` 파라미터는 10, 20, 30번째 레이어의 `post_attention_layernorm` 파라미터와도 0.92 이상의 매우 높은 cosine 유사도를 갖습니다.
+`post_attention_layernorm` 파라미터는 10, 20, 30번째 레이어의 `post_attention_layernorm` 파라미터와 0.92 이상의 매우 높은 cosine 유사도를 갖습니다.
 
 하지만 제가 이것을 확신있게 말하지 않고 '추정'한다고 한 것에는 이유가 있습니다.
 실험 결과 **많은 모델들**이 이런 경향을 보이곤 하지만, 그렇다고 **모든 모델**이 그런 것은 아니였습니다. 
